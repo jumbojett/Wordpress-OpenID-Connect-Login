@@ -1,0 +1,3 @@
+[submodule "includes/auth"]
+	path = includes/auth
+	url = https://github.com/jumbojett/OpenID-Connect-PHP.git

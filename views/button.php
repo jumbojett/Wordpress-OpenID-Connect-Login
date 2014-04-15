@@ -1,0 +1,1 @@
+<i>or</i> <strong><a href="<?php echo get_site_url(); ?>/?openid-connect=endpoint">login</a> with openid connect</strong>
