@@ -29,12 +29,23 @@ if (!class_exists('OpenIDConnectLoginPlugin')):
     require('lib/auth/OpenIDConnectClient.php5');
 
     class WP_OpenIDConnectClient extends OpenIDConnectClient {
-        /**
-         * @return string
-         */
-        public function getRedirectURL() {
-            return get_site_url() . '/?openid-connect=endpoint';
+
+        public function __construct() {
+
+            // Setup a proxy if defined in wp-config.php
+            if (defined('WP_PROXY_HOST')) {
+                $proxy = WP_PROXY_HOST;
+
+                if (defined('WP_PROXY_PORT')) {
+                    $proxy = rtrim($proxy, '/') . ':' . WP_PROXY_PORT . '/';
+                }
+
+                $this->setHttpProxy($proxy);
+            }
+
+            parent::__construct();
         }
+
     }
 
     class OpenIDConnectLoginPlugin extends MY_Plugin {
@@ -79,11 +90,14 @@ if (!class_exists('OpenIDConnectLoginPlugin')):
             $self = $this;
             add_action('parse_request', function ($wp) use ($self) {
                 if (array_key_exists('openid-connect', $wp->query_vars)
-                    && $wp->query_vars['openid-connect'] == 'endpoint'
+                    && isset($wp->query_vars['openid-connect'])
                 ) {
-                    $self->authenticate();
+                    $provider_url = trim(urldecode($wp->query_vars['openid-connect']));
+                    $self->authenticate($provider_url);
+
                 }
             });
+
 
         } // end constructor
 
@@ -95,31 +109,83 @@ if (!class_exists('OpenIDConnectLoginPlugin')):
         }
 
         /**
-         *
+         * @param $input
+         * @return mixed
          */
-        public function authenticate() {
+        public function validate_options($input) {
 
-            if (!$this->get_option('openid_client_id')
-                || !$this->get_option('openid_client_secret')
-                || !$this->get_option('openid_server_url')
-            ) {
-                wp_die("OpenID Connect plugin is not configured");
+            $input['openid_providers'] = str_replace(' ', '', $input['openid_providers']);
+            $provider_arr = explode("\n", $input['openid_providers']);
+
+            $return = $input;
+            $return['openid_providers'] = '';
+            $return['openid_provider_hash'] = $this->options['openid_provider_hash'];
+
+            // Provider details are stored to a setting that is not displayed
+            if (!is_array($return['openid_provider_hash'])) {
+                $return['openid_provider_hash'] = array();
             }
 
-            $oidc = new WP_OpenIDConnectClient($this->get_option('openid_server_url')
-                , $this->get_option('openid_client_id')
-                , $this->get_option('openid_client_secret'));
+            // Make sure each provider has a valid URL
+            foreach ($provider_arr as $provider_url) {
 
-            // Setup a proxy if defined in wp-config.php
-            if (defined('WP_PROXY_HOST')) {
-                $proxy = WP_PROXY_HOST;
+                // Remove additional white-space
+                $provider_url = str_replace("\r", '', $provider_url);
 
-                if (defined('WP_PROXY_PORT')) {
-                    $proxy = rtrim($proxy, '/') . ':' . WP_PROXY_PORT . '/';
+                if (filter_var($provider_url, FILTER_VALIDATE_URL) === false || $provider_url == '') {
+                    continue;
                 }
 
-                $oidc->setHttpProxy($proxy);
+                // Register with the provider if they don't exist
+                if (!array_key_exists($provider_url, $return['openid_provider_hash'])) {
+
+                    $oidc = new WP_OpenIDConnectClient();
+                    $oidc->setProviderURL($provider_url);
+                    $oidc->setRedirectURL(get_site_url(null, '', 'https') . '/?openid-connect=' . urlencode($provider_url));
+                    $oidc->setClientName(get_bloginfo());
+
+                    try {
+                        $oidc->register();
+
+                        $return['openid_provider_hash'][$provider_url] = (object)array(
+                            'client_id' => $oidc->getClientID(),
+                            'client_secret' => $oidc->getClientSecret()
+                        );
+
+                        $return['openid_providers'] .= "$provider_url\n";
+
+                    } catch (OpenIDConnectClientException $e) {
+                    }
+
+                } else {
+                    $return['openid_providers'] .= "$provider_url\n";
+                }
+
+
             }
+
+            return $return;
+
+        }
+
+
+        /**
+         *
+         */
+        public function authenticate($provider_url) {
+
+            $providers = $this->options['openid_provider_hash'];
+
+            if (!array_key_exists($provider_url,$providers)) {
+                wp_die("We could not authenticate against that provider. They are not approved.");
+            }
+
+            $oidc = new WP_OpenIDConnectClient();
+
+            $oidc->setProviderURL($provider_url);
+            $oidc->setClientID($providers[$provider_url]->client_id);
+            $oidc->setClientSecret($providers[$provider_url->client_secret]);
+            $oidc->setRedirectURL(get_site_url(null, '', 'https') . '/?openid-connect=' . urlencode($provider_url));
 
             $oidc->addScope('openid');
             $oidc->addScope('email');
@@ -143,40 +209,30 @@ if (!class_exists('OpenIDConnectLoginPlugin')):
          */
         private function login_oidc_user($oidc) {
 
-            /*
-                * Only allow usernames that are not affected by sanitize_user(), and that are not
-                * longer than 60 characters (which is the 'user_login' database field length).
-                * Otherwise an account would be created but with a sanitized username, which might
-                * clash with an already existing account.
-                * See sanitize_user() in wp-includes/formatting.php.
-                *
-            */
-            $username = $oidc->requestUserInfo('preferred_username');
+            $user_name = $oidc->requestUserInfo('preferred_username');
+            $user_name = substr(sanitize_user($user_name, TRUE), 0, 60);
 
-            if ($username != substr(sanitize_user($username, TRUE), 0, 60)) {
-                $error = sprintf(__('<p><strong>ERROR</strong><br /><br />
-				We got back the following identifier from the login process:<pre>%s</pre>
-				Unfortunately that is not suitable as a username.<br />
-				Please contact the <a href="mailto:%s">blog administrator</a> and ask to reconfigure the
-				OpenID connect plugin!</p>'), $username, get_option('admin_email'));
-                $errors['registerfail'] = $error;
-                print($error);
-                exit();
-            }
+            // User ID on issuer is always unique
+            $unique_id = $oidc->requestUserInfo('user_id') . '@' . $oidc->getProviderURL();
+
+            // If the user doesn't have a prefered username, then they're getting a big ugly hash
+            $user_name = md5($unique_id);
 
             if (!function_exists('get_user_by')) {
                 die("Could not load user data");
             }
 
-            if ($oidc->requestUserInfo('email_verified') != true) {
-                throw new OpenIDConnectClientException("Your email address has not been verified with your provider.");
+            // Login the user by email if it's verified, otherwise login via meta
+            if ($oidc->requestUserInfo('email_verified') == true) {
+                $user = get_user_by('email', $oidc->requestUserInfo('email'));
+            } else {
+                list($user) = get_users(array('meta_key' => '_openid_connect', 'meta_value' => $unique_id));
             }
 
-            $user = get_user_by('email', $oidc->requestUserInfo('email'));
             $wp_uid = null;
 
             if ($user) {
-                // user already exists
+                // User already exists
                 $wp_uid = $user->ID;
             } else {
 
@@ -184,22 +240,31 @@ if (!class_exists('OpenIDConnectLoginPlugin')):
                 // User is not in the WordPress database
                 // Add them to the database
 
-                // User must have an e-mail address to register
+                $email = $oidc->requestUserInfo('email');
+
+                // If the user's email isn't verified on the provider then we discard it when creating a new user
+                if ($oidc->requestUserInfo('email_verified') != true) $email = '';
 
                 $wp_uid = wp_insert_user(array(
-                    'user_login' => $username,
+                    'user_login' => $user_name,
                     'user_pass' => wp_generate_password(12, true),
-                    'user_email' => $oidc->requestUserInfo('email'),
+                    'user_email' => $email,
                     'first_name' => $oidc->requestUserInfo('given_name'),
                     'last_name' => $oidc->requestUserInfo('family_name')
                 ));
 
+                if (get_class($wp_uid) == 'WP_Error') {
+                    wp_die("We're having some trouble creating a local account for you on this instance. Contact your wordpress admin.");
+                }
+
+                // Add meta to identify this user in the future
+                add_user_meta($wp_uid, '_openid_connect', $unique_id, true);
 
             }
 
-            $user = wp_set_current_user($wp_uid, $username);
+            $user = wp_set_current_user($wp_uid, $user_name);
             wp_set_auth_cookie($wp_uid);
-            do_action('wp_login', $username);
+            do_action('wp_login', $user_name);
 
             // Redirect the user
             wp_safe_redirect(admin_url());
@@ -212,7 +277,7 @@ if (!class_exists('OpenIDConnectLoginPlugin')):
          */
         public function register_plugin_settings_api_init() {
 
-            register_setting($this->get_option_name(), $this->get_option_name());
+            register_setting($this->get_option_name(), $this->get_option_name(), array($this, 'validate_options'));
 
             add_settings_section('openid_connect_client', 'Main Settings', function () {
                 echo "<p>These settings are required for the plugin to work properly.
@@ -221,12 +286,7 @@ if (!class_exists('OpenIDConnectLoginPlugin')):
             }, 'openid-connect');
 
             // Add a Server URL setting
-            $this->add_settings_field('openid_server_url', 'openid-connect', 'openid_connect_client');
-            // Add a Client ID setting
-            $this->add_settings_field('openid_client_id', 'openid-connect', 'openid_connect_client');
-            // Add a Client Secret setting
-            $this->add_settings_field('openid_client_secret', 'openid-connect', 'openid_connect_client');
-
+            $this->add_settings_field('openid_providers', 'openid-connect', 'openid_connect_client', 'textarea');
 
         }
 
@@ -245,6 +305,6 @@ if (!class_exists('OpenIDConnectLoginPlugin')):
     } // end class
 
 // Init plugin
-$plugin_name = new OpenIDConnectLoginPlugin();
+    $openid_connect_plugin = new OpenIDConnectLoginPlugin();
 
 endif;

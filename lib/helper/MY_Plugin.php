@@ -120,14 +120,7 @@ if (!class_exists('MY_Plugin')):
         public function get_option($key) {
 
             if (array_key_exists($key, $this->options)) {
-
-                $value = $this->options[$key];
-
-                if (is_array($value)) {
-                    return $this->stripslashes_deep($value);
-                } elseif (is_string($value)) {
-                    return stripslashes($value);
-                }
+                return $this->options[$key];
             }
             return null;
         }
@@ -198,10 +191,15 @@ if (!class_exists('MY_Plugin')):
 
             $self = $this;
 
-            add_settings_field($field_name, str_replace(array("_"), ' ', $field_name), function () use ($self, $field_name) {
+            add_settings_field($field_name, str_replace(array("_"), ' ', $field_name), function () use ($self, $field_name, $type) {
 
-                echo "<input id='{$field_name}' name='{$self->get_option_name()}[{$field_name}]' size='40' type='text'
-                         value='{$self->get_option($field_name)}' />";
+                $tag = "input";
+                if ($type == "textarea") $tag = "textarea";
+
+                echo "<{$tag} id='{$field_name}' name='{$self->get_option_name()}[{$field_name}]'";
+
+                if ($type == "textarea") echo " rows='10' cols='40'>{$self->get_option($field_name)}</textarea>";
+                else echo "size='40' type='text' value='{$self->get_option($field_name)}' />";
 
             }, $page, $section);
 

@@ -5,8 +5,7 @@ if (!current_user_can('manage_options'))
 <div class="wrap">
     <h2>OpenID Connect</h2>
 
-    <p><strong>Important!</strong> register the following redirect uri with your provider:
-        (<i><?php echo get_site_url(); ?>/?openid-connect=endpoint</i>)</p>
+    <p><strong>Important!</strong> Make sure your provider supports auto-registration.</p>
 
     <form action="options.php" method="post">
 
