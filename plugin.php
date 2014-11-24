@@ -115,7 +115,8 @@ if (!class_exists('OpenIDConnectLoginPlugin')):
         public function validate_options($input) {
 
             $input['openid_providers'] = str_replace(' ', '', $input['openid_providers']);
-            $provider_arr = explode("\n", $input['openid_providers']);
+
+            $provider_arr = explode("\n", trim(str_replace("\r", '', $input['openid_providers'])));
 
             $return = $input;
             $return['openid_providers'] = '';
@@ -129,9 +130,6 @@ if (!class_exists('OpenIDConnectLoginPlugin')):
             // Make sure each provider has a valid URL
             foreach ($provider_arr as $provider_url) {
 
-                // Remove additional white-space
-                $provider_url = str_replace("\r", '', $provider_url);
-
                 if (filter_var($provider_url, FILTER_VALIDATE_URL) === false || $provider_url == '') {
                     continue;
                 }
@@ -142,7 +140,7 @@ if (!class_exists('OpenIDConnectLoginPlugin')):
                     $oidc = new WP_OpenIDConnectClient();
                     $oidc->setProviderURL($provider_url);
                     $oidc->setRedirectURL(get_site_url(null, '', 'https') . '/?openid-connect=' . urlencode($provider_url));
-                    $oidc->setClientName(get_bloginfo());
+                    $oidc->setClientName("(Wordpress Instance) " . get_bloginfo());
 
                     try {
                         $oidc->register();
@@ -164,6 +162,13 @@ if (!class_exists('OpenIDConnectLoginPlugin')):
 
             }
 
+            // Remove deleted providers
+            foreach ($return['openid_provider_hash'] as $provider_url => $value) {
+                if (!in_array($provider_url, $provider_arr)) {
+                    unset($return['openid_provider_hash'][$provider_url]);
+                }
+            }
+
             return $return;
 
         }
@@ -176,7 +181,7 @@ if (!class_exists('OpenIDConnectLoginPlugin')):
 
             $providers = $this->options['openid_provider_hash'];
 
-            if (!array_key_exists($provider_url,$providers)) {
+            if (!array_key_exists($provider_url, $providers)) {
                 wp_die("We could not authenticate against that provider. They are not approved.");
             }
 
@@ -184,7 +189,7 @@ if (!class_exists('OpenIDConnectLoginPlugin')):
 
             $oidc->setProviderURL($provider_url);
             $oidc->setClientID($providers[$provider_url]->client_id);
-            $oidc->setClientSecret($providers[$provider_url->client_secret]);
+            $oidc->setClientSecret($providers[$provider_url]->client_secret);
             $oidc->setRedirectURL(get_site_url(null, '', 'https') . '/?openid-connect=' . urlencode($provider_url));
 
             $oidc->addScope('openid');
