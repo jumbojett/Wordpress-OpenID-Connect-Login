@@ -213,15 +213,11 @@ if (!class_exists('OpenIDConnectLoginPlugin')):
          * @throws OpenIDConnectClientException
          */
         private function login_oidc_user($oidc) {
-
-            $user_name = $oidc->requestUserInfo('preferred_username');
-            $user_name = substr(sanitize_user($user_name, TRUE), 0, 60);
-
+            
             // User ID on issuer is always unique
-            $unique_id = $oidc->requestUserInfo('user_id') . '@' . $oidc->getProviderURL();
+            $unique_id = $oidc->requestUserInfo('sub') . '@' . $oidc->getProviderURL();
 
-            // If the user doesn't have a prefered username, then they're getting a big ugly hash
-            $user_name = md5($unique_id);
+            $user_name = substr(sanitize_user($unique_id, TRUE), 0, 60);
 
             if (!function_exists('get_user_by')) {
                 die("Could not load user data");
